@@ -1,0 +1,346 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Toilet Defense – full graphics</title>
+<style>
+  html,body{margin:0;background:#0b0f18;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+  #wrap{position:relative;max-width:1024px;margin:0 auto}
+  canvas{width:100vw;max-width:1024px;height:auto;display:block;background:#0e1422}
+  .hud{position:absolute;left:0;right:0;top:8px;display:flex;justify-content:space-between;padding:0 14px;font-weight:800;text-shadow:0 2px 4px rgba(0,0,0,.6)}
+  .btns{position:absolute;left:0;right:0;bottom:12px;display:flex;justify-content:space-between;gap:12px;padding:0 14px}
+  .btn{flex:1;min-height:60px;border-radius:16px;border:none;background:#1d2744;color:#fff;font-size:22px;font-weight:900;box-shadow:0 10px 28px rgba(0,0,0,.35)}
+  .btn:active{transform:scale(.98)}
+  .center{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .card{pointer-events:auto;background:#12182a;border:2px solid #2b3a63;border-radius:18px;padding:18px 18px;box-shadow:0 16px 40px rgba(0,0,0,.55);text-align:center;width:min(92vw,560px)}
+  .title{font-size:26px;margin:6px 0 12px}
+  .sub{opacity:.85;margin:6px 0 12px}
+  .pill{display:inline-block;background:#1a2442;border:1px solid #2e3f6d;border-radius:999px;padding:4px 10px;margin:2px 6px 0 0;font-size:12px;opacity:.9}
+  input[type=text]{width:100%;padding:12px;border-radius:12px;border:1px solid #2e3f6d;background:#0e1424;color:#fff;font-size:18px;outline:none}
+  .row{display:flex;gap:10px;margin-top:12px}
+  .ghost{background:#263459}
+  .list{max-height:40vh;overflow:auto;text-align:left;margin-top:10px;border-top:1px solid #2b3a63;padding-top:8px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="1000" height="560"></canvas>
+  <div class="hud">
+    <div id="score">Score: 0</div>
+    <div id="lives">Lives: 🧻🧻🧻</div>
+  </div>
+
+  <div class="btns">
+    <button class="btn" id="leftBtn">◀︎</button>
+    <button class="btn" id="rightBtn">▶︎</button>
+  </div>
+
+  <div class="center" id="overlay" style="display:flex">
+    <div class="card">
+      <div class="title">Toilet Defense</div>
+      <div class="sub">Going to the toilet? Catch your poop!</div>
+      <button class="btn" id="startBtn">Start</button>
+      <div class="list" id="hiPreview"></div>
+      <div class="sub"><span class="pill">Tap ◀︎ ▶︎ or use arrow keys</span><span class="pill">Enter name on Game Over</span></div>
+    </div>
+  </div>
+
+  <div class="center" id="nameOverlay" style="display:none">
+    <div class="card">
+      <div class="title">New High Score!</div>
+      <div class="sub">Enter your name (max 10 chars)</div>
+      <input type="text" id="nameInput" maxlength="10" placeholder="Your name">
+      <div class="row">
+        <button class="btn ghost" id="skipName">Skip</button>
+        <button class="btn" id="saveName">Save</button>
+      </div>
+      <div class="list" id="hisAfter"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const W = 1000, H = 560;
+  const cvs = document.getElementById('game');
+  const ctx = cvs.getContext('2d');
+
+  function fit() {
+    const ratio = W/H;
+    const w = Math.min(window.innerWidth, 1024);
+    cvs.style.width = w + 'px';
+    cvs.style.height = (w/ratio) + 'px';
+  }
+  window.addEventListener('resize', fit); fit();
+
+  const scoreEl = document.getElementById('score');
+  const livesEl = document.getElementById('lives');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+  const leftBtn = document.getElementById('leftBtn');
+  const rightBtn = document.getElementById('rightBtn');
+  const nameOverlay = document.getElementById('nameOverlay');
+  const nameInput = document.getElementById('nameInput');
+  const saveName = document.getElementById('saveName');
+  const skipName = document.getElementById('skipName');
+  const hiPreview = document.getElementById('hiPreview');
+  const hisAfter = document.getElementById('hisAfter');
+
+  const HS_KEY = 'TD_HIGHS_FULL';
+  function loadHS(){ try{ return JSON.parse(localStorage.getItem(HS_KEY))||[] }catch{return []} }
+  function saveHS(list){ localStorage.setItem(HS_KEY, JSON.stringify(list.slice(0,100))); }
+  function addHS(name, score){
+    const list = loadHS();
+    list.push({name, score});
+    list.sort((a,b)=>b.score-a.score);
+    saveHS(list);
+  }
+  function renderHS(el, n=10){
+    const list = loadHS().slice(0,n);
+    el.innerHTML = '<b>Top scores</b><br>' + (list.length? list.map((e,i)=> `${i+1}. ${e.name||'Player'} – ${e.score}`).join('<br>') : 'No scores yet.');
+  }
+  renderHS(hiPreview);
+
+  let running = false;
+  let score = 0;
+  let lives = 3;
+  let spawnInterval = 1050;      // ms
+  const spawnMin = 430;          // ms
+  const spawnAccel = 5.2;        // ms per poop
+  const fallSpeed = 260;         // px/s
+  const floorY = 498;
+  let lastSpawn = 0;
+
+  const baseSpawn = [
+    {x:210,y:150}, {x:210,y:260}, // left top/bot
+    {x:790,y:260}, {x:790,y:150}  // right bot/top (ordering: LT, LB, RB, RT)
+  ];
+  const toiletX = [310,310,690,690];
+  let toiletIndex = 1;
+
+  const poops = [];
+  const rand = (a,b)=> a+Math.random()*(b-a);
+
+  function reset(){
+    running = false;
+    score = 0;
+    lives = 3;
+    spawnInterval = 1050;
+    lastSpawn = performance.now();
+    poops.length = 0;
+    toiletIndex = 1;
+    updateHUD();
+  }
+
+  function updateHUD(){
+    scoreEl.textContent = 'Score: ' + score;
+    livesEl.textContent = 'Lives: ' + '🧻'.repeat(lives);
+  }
+
+  function spawnPoop(){
+    const i = Math.floor(Math.random()*4);
+    const wob = getPipeWobble();
+    const s = baseSpawn[i];
+    const p = { i, x:s.x + wob.dx[i], y:s.y + wob.dy[i], vy:fallSpeed, frame:0 };
+    poops.push(p);
+    spawnInterval = Math.max(spawnMin, spawnInterval - spawnAccel);
+  }
+
+  function getPipeWobble(){
+    const t = performance.now()/1000;
+    const dx = [
+      Math.sin(t*2.1)*3, Math.cos(t*1.8)*3, Math.sin(t*2.0+1.2)*3, Math.cos(t*2.2+0.7)*3
+    ];
+    const dy = [
+      Math.cos(t*2.0)*2, Math.sin(t*1.6)*2, Math.cos(t*2.3+0.5)*2, Math.sin(t*2.1+0.8)*2
+    ];
+    return {dx,dy};
+  }
+
+  function moveToilet(d){
+    if (!running) return;
+    toiletIndex = Math.min(3, Math.max(0, toiletIndex + d));
+  }
+  leftBtn.addEventListener('touchstart', e=>{ e.preventDefault(); moveToilet(-1); });
+  rightBtn.addEventListener('touchstart', e=>{ e.preventDefault(); moveToilet(+1); });
+  window.addEventListener('keydown', e=>{
+    if (e.key==='ArrowLeft') moveToilet(-1);
+    if (e.key==='ArrowRight') moveToilet(+1);
+    if (!running && (e.key==='ArrowLeft'||e.key==='ArrowRight')) startGame();
+  });
+
+  startBtn.onclick = () => startGame();
+  function startGame(){
+    overlay.style.display='none';
+    reset();
+    running = true;
+    lastSpawn = performance.now();
+  }
+
+  function gameOver(){
+    running = false;
+    nameOverlay.style.display='flex';
+    nameInput.value='';
+    nameInput.focus();
+    renderHS(hisAfter);
+  }
+  saveName.onclick = () => {
+    const n = (nameInput.value||'Player').slice(0,10);
+    addHS(n, score);
+    nameOverlay.style.display='none';
+    renderHS(hiPreview);
+    overlay.style.display='flex';
+  };
+  skipName.onclick = () => {
+    nameOverlay.style.display='none';
+    overlay.style.display='flex';
+  };
+
+  function bgGradient(){
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#0e1526');
+    g.addColorStop(1,'#0a1020');
+    return g;
+  }
+
+  function drawBackground(){
+    ctx.fillStyle = bgGradient();
+    ctx.fillRect(0,0,W,H);
+    for(let i=0;i<90;i++){
+      const x = (i*37)%W, y=(i*53)%H;
+      ctx.fillStyle='rgba(255,255,255,.04)';
+      ctx.fillRect(x,y,2,2);
+    }
+    ctx.fillStyle='#0a1322';
+    ctx.fillRect(0,520,W,40);
+  }
+
+  function drawPipes(){
+    const wob = getPipeWobble();
+    drawPipeColumn(200, wob);
+    drawPipeColumn(800, wob, true);
+  }
+
+  function drawPipeColumn(cx, wob, mirror=false){
+    ctx.save();
+    ctx.translate(cx,0);
+    ctx.fillStyle='#19305e';
+    roundRect(ctx, -28, 80, 56, 380, 10, true);
+    ctx.fillStyle='#22427e';
+    roundRect(ctx, -22, 80, 44, 380, 10, true);
+    const off = mirror? 60 : -60;
+    ctx.fillStyle='#3b5fb0';
+    roundRect(ctx, off-50, 120 + (mirror? -2:0), 50, 26, 8, true);
+    roundRect(ctx, off-50, 230 + (mirror? +2:0), 50, 26, 8, true);
+    ctx.fillStyle='#2c488b';
+    ctx.fillRect(off-50, 120+(mirror?-2:0), 50, 6);
+    ctx.fillRect(off-50, 230+(mirror?+2:0), 50, 6);
+    ctx.restore();
+  }
+
+  function roundRect(ctx,x,y,w,h,r, fill){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y, x+w,y+h, r);
+    ctx.arcTo(x+w,y+h, x,y+h, r);
+    ctx.arcTo(x,y+h, x,y, r);
+    ctx.arcTo(x,y, x+w,y, r);
+    if (fill) ctx.fill();
+  }
+
+  function drawToilet(){
+    const x = toiletX[toiletIndex], y = 505;
+    ctx.globalAlpha=0.25;
+    ctx.fillStyle='#000';
+    ctx.beginPath(); ctx.ellipse(x, 530, 46, 10, 0, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+
+    ctx.fillStyle='#bcd7ff';
+    roundRect(ctx, x-16, 492, 32, 18, 6, true);
+    ctx.fillStyle='#d7e6ff';
+    ctx.beginPath(); ctx.ellipse(x, 505, 66, 22, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='#8fb7ff';
+    ctx.beginPath(); ctx.ellipse(x, 505, 48, 14, 0, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha=0.35; ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.ellipse(x-22, 498, 18, 6, 0.2, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  function drawPoop(p){
+    ctx.globalAlpha=.25; ctx.fillStyle='#000';
+    ctx.beginPath(); ctx.ellipse(p.x + (p.i<2? 20 : -20), 515, 16, 6, 0, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+
+    ctx.fillStyle='#7b4a23';
+    ctx.beginPath(); ctx.arc(p.x, p.y, 15, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='#5d3818';
+    ctx.beginPath(); ctx.arc(p.x, p.y-10, 11, 0, Math.PI*2); ctx.fill();
+
+    const blink = Math.floor((performance.now()/200)%12)===0;
+    ctx.fillStyle='#fff';
+    if (!blink) {
+      ctx.fillRect(p.x-7, p.y-3, 6, 6);
+      ctx.fillRect(p.x+1,  p.y-3, 6, 6);
+      ctx.fillStyle='#111';
+      ctx.fillRect(p.x-5, p.y-1, 2, 2);
+      ctx.fillRect(p.x+3, p.y-1, 2, 2);
+    } else {
+      ctx.fillRect(p.x-7, p.y-1, 6, 2);
+      ctx.fillRect(p.x+1,  p.y-1, 6, 2);
+    }
+    ctx.fillStyle='#111';
+    ctx.fillRect(p.x-3, p.y+4, 6, 2);
+  }
+
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(34, now - last); last = now;
+
+    if (running){
+      if (now - lastSpawn >= spawnInterval){ lastSpawn = now; spawnPoop(); }
+      for (let i=poops.length-1;i>=0;i--){
+        const p = poops[i];
+        p.y += (p.vy * dt/1000);
+        if (p.y >= floorY){
+          if (p.i === toiletIndex){
+            score++;
+          } else {
+            lives--;
+            if (lives<=0){
+              updateHUD();
+              poops.length = 0;
+              gameOver();
+              draw();
+              requestAnimationFrame(loop);
+              return;
+            }
+          }
+          poops.splice(i,1);
+          updateHUD();
+        }
+      }
+    }
+
+    drawBackground();
+    drawPipes();
+    ctx.strokeStyle='rgba(255,255,255,.06)';
+    ctx.beginPath();
+    for (const s of baseSpawn){ ctx.moveTo(s.x,s.y); ctx.lineTo(s.x,520); }
+    ctx.stroke();
+    drawToilet();
+    poops.forEach(drawPoop);
+
+    requestAnimationFrame(loop);
+  }
+
+  function start(){
+    reset();
+    requestAnimationFrame(loop);
+  }
+  start();
+})();
+</script>
+</body>
+</html>
